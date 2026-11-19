@@ -456,7 +456,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
+  if (req.method !== "POST") {
+    // Debug: mostrar qué archivos ve esta función
+    const { readdirSync: rd } = await import("fs");
+    const debugPaths: Record<string, unknown> = { PROJECT_DIR };
+    try { debugPaths.root = rd(PROJECT_DIR); } catch (e: any) { debugPaths.rootError = e.message; }
+    try { debugPaths.fixtures = rd(join(PROJECT_DIR, "fixtures")); } catch (e: any) { debugPaths.fixturesError = e.message; }
+    try { debugPaths.casos = rd(join(PROJECT_DIR, "fixtures", "reto-01", "casos")); } catch (e: any) { debugPaths.casosError = e.message; }
+    return res.status(405).json({ error: "POST only", debug: debugPaths });
+  }
 
   try {
     const llm = new KimiAdapter();
