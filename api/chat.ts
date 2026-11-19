@@ -42,106 +42,108 @@ function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
   return current;
 }
 
-// ─── Anthropic (Claude) Adapter (inlined) ────────────────────────
-class AnthropicAdapter implements LlmAdapter {
-  provider = "anthropic";
+// ─── KimiAI / Moonshot Adapter (OpenAI-compatible) ──────────────
+class KimiAdapter implements LlmAdapter {
+  provider = "kimi";
   model: string;
   private apiKey: string;
   private timeoutMs: number;
+  private baseUrl: string;
 
   constructor() {
-    this.apiKey = process.env.ANTHROPIC_API_KEY || "";
-    this.model = process.env.LLM_MODEL || "claude-sonnet-4-20250514";
+    this.apiKey = process.env.MOONSHOT_API_KEY || "";
+    this.model = process.env.LLM_MODEL || "kimi-k2.6";
+    this.baseUrl = process.env.KIMI_BASE_URL || "https://api.moonshot.ai/v1";
     this.timeoutMs = 55_000;
 
-    if (!this.apiKey) throw new Error("ANTHROPIC_API_KEY no configurada");
+    if (!this.apiKey) throw new Error("MOONSHOT_API_KEY no configurada");
   }
 
   async enviar(mensajes: LlmMessage[], herramientas: ToolDefinition[]): Promise<LlmResponse> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      // Separar system prompt de los mensajes
-      let systemPrompt = "";
+      // Construir mensajes en formato OpenAI
       const apiMessages: Array<Record<string, unknown>> = [];
 
       for (const m of mensajes) {
         if (m.role === "system") {
-          systemPrompt += (systemPrompt ? "\n\n" : "") + m.content;
+          apiMessages.push({ role: "system", content: m.content || "" });
           continue;
         }
         if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
-          const content: Array<Record<string, unknown>> = [];
-          if (m.content) content.push({ type: "text", text: m.content });
-          for (const tc of m.tool_calls) {
-            content.push({
-              type: "tool_use",
-              id: tc.id,
-              name: tc.function.name,
-              input: JSON.parse(tc.function.arguments),
-            });
-          }
-          apiMessages.push({ role: "assistant", content });
+          const msg: Record<string, unknown> = { role: "assistant" };
+          if (m.content) msg.content = m.content;
+          msg.tool_calls = m.tool_calls.map((tc) => ({
+            id: tc.id,
+            type: "function",
+            function: { name: tc.function.name, arguments: tc.function.arguments },
+          }));
+          apiMessages.push(msg);
           continue;
         }
         if (m.role === "tool") {
           apiMessages.push({
-            role: "user",
-            content: [{ type: "tool_result", tool_use_id: m.tool_call_id, content: m.content }],
+            role: "tool",
+            tool_call_id: m.tool_call_id,
+            content: m.content || "",
           });
           continue;
         }
         apiMessages.push({ role: m.role, content: m.content || "" });
       }
 
-      // Convertir herramientas al formato Anthropic
-      const anthropicTools = herramientas.map((h) => ({
-        name: h.function.name,
-        description: h.function.description,
-        input_schema: h.function.parameters,
-      }));
-
+      // Construir body OpenAI-compatible
       const body: Record<string, unknown> = {
         model: this.model,
-        max_tokens: 4096,
         messages: apiMessages,
+        max_tokens: 4096,
       };
-      if (systemPrompt) body.system = systemPrompt;
-      if (anthropicTools.length > 0) body.tools = anthropicTools;
+      if (herramientas.length > 0) {
+        body.tools = herramientas.map((h) => ({
+          type: "function",
+          function: {
+            name: h.function.name,
+            description: h.function.description,
+            parameters: h.function.parameters,
+          },
+        }));
+        body.tool_choice = "auto";
+      }
 
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": this.apiKey,
-          "anthropic-version": "2023-06-01",
+          "Authorization": `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      if (!res.ok) { const text = await res.text(); throw new Error(`Anthropic API error ${res.status}: ${text}`); }
+      if (!res.ok) { const text = await res.text(); throw new Error(`Kimi API error ${res.status}: ${text}`); }
 
       const json = (await res.json()) as any;
+      const choice = json.choices?.[0]?.message;
 
-      // Convertir respuesta Anthropic al formato unificado
-      let textContent = "";
+      if (!choice) throw new Error("Respuesta vacía de Kimi API");
+
+      const textContent = choice.content || "";
       const toolCalls: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> = [];
 
-      for (const block of json.content || []) {
-        if (block.type === "text") textContent += block.text;
-        if (block.type === "tool_use") {
+      if (choice.tool_calls && Array.isArray(choice.tool_calls)) {
+        for (const tc of choice.tool_calls) {
           toolCalls.push({
-            id: block.id,
+            id: tc.id,
             type: "function",
-            function: { name: block.name, arguments: JSON.stringify(block.input) },
+            function: { name: tc.function.name, arguments: tc.function.arguments },
           });
         }
       }
 
       const usage = json.usage ? {
-        prompt_tokens: json.usage.input_tokens,
-        completion_tokens: json.usage.output_tokens,
-        total_tokens: json.usage.input_tokens + json.usage.output_tokens,
+        prompt_tokens: json.usage.prompt_tokens,
+        completion_tokens: json.usage.completion_tokens,
+        total_tokens: json.usage.total_tokens,
       } : undefined;
 
       return { content: textContent || null, tool_calls: toolCalls, usage };
@@ -454,7 +456,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
   try {
-    const llm = new AnthropicAdapter();
+    const llm = new KimiAdapter();
     const tools = buildTools(PROJECT_DIR);
 
     const { sessionId: reqSessionId, message } = req.body as { sessionId?: string; message: string };
