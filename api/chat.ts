@@ -208,27 +208,28 @@ function buildTools(projectDir: string) {
     execute: async (args: any, ctx: Ctx) => {
       const { caso, campos } = args as { caso: string; campos: string[] };
       const maestro = readJson(join(fixturesDir, "repositorio", "maestro.json")) as Record<string, unknown>;
-      const glosario = readJson(join(fixturesDir, "glosario-campos.json")) as Array<{ sinonimos: string[]; campo_maestro: string }>;
+      const glosario = readJson(join(fixturesDir, "glosario-campos.json")) as Record<string, string>;
 
       const solicitud = readJson(join(fixturesDir, "casos", caso, "solicitud.json")) as any;
       const pais = solicitud.pais || "CO";
 
       const resultado = campos.map((campo) => {
         const normalizado = campo.toLowerCase().trim();
-        const match = glosario.find((g) => g.sinonimos.some((s) => s.toLowerCase() === normalizado));
-        if (!match) return { campo, estado: "no_mapeado", valor: null, campo_maestro: null, nota: "Sin sinónimo en glosario" };
+        // glosario es un objeto plano { "sinónimo": "campo_maestro" }
+        const campoMaestro = Object.entries(glosario).find(([key]) => key.toLowerCase() === normalizado)?.[1] ?? null;
+        if (!campoMaestro) return { campo, estado: "no_mapeado", valor: null, campo_maestro: null, nota: "Sin sinónimo en glosario" };
 
-        const valor = getNestedValue(maestro, match.campo_maestro);
-        if (valor === undefined || valor === null) return { campo, estado: "faltante_en_maestro", valor: null, campo_maestro: match.campo_maestro, nota: "No existe en maestro.json" };
+        const valor = getNestedValue(maestro, campoMaestro);
+        if (valor === undefined || valor === null) return { campo, estado: "faltante_en_maestro", valor: null, campo_maestro: campoMaestro, nota: "No existe en maestro.json" };
 
         const idTributarios = ["nit", "rut", "rtn", "ruc", "identificacion_tributaria"];
-        const requiereConfirmacion = pais !== "CO" && idTributarios.some((id) => match.campo_maestro.toLowerCase().includes(id));
+        const requiereConfirmacion = pais !== "CO" && idTributarios.some((id) => campoMaestro.toLowerCase().includes(id));
 
         return {
           campo,
           estado: requiereConfirmacion ? "requiere_confirmacion" : "mapeado",
           valor,
-          campo_maestro: match.campo_maestro,
+          campo_maestro: campoMaestro,
           nota: requiereConfirmacion ? `Identificador tributario extranjero (país: ${pais}). Verificar equivalencia.` : null,
         };
       });
@@ -457,13 +458,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   if (req.method !== "POST") {
-    // Debug: mostrar qué archivos ve esta función
-    const { readdirSync: rd } = await import("fs");
-    const debugPaths: Record<string, unknown> = { PROJECT_DIR };
-    try { debugPaths.root = rd(PROJECT_DIR); } catch (e: any) { debugPaths.rootError = e.message; }
-    try { debugPaths.fixtures = rd(join(PROJECT_DIR, "fixtures")); } catch (e: any) { debugPaths.fixturesError = e.message; }
-    try { debugPaths.casos = rd(join(PROJECT_DIR, "fixtures", "reto-01", "casos")); } catch (e: any) { debugPaths.casosError = e.message; }
-    return res.status(405).json({ error: "POST only", debug: debugPaths });
+    return res.status(405).json({ error: "POST only" });
   }
 
   try {
