@@ -1,7 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync, appendFileSync } from "fs";
-import { join, resolve, dirname } from "path";
-import { fileURLToPath } from "url";
+import { join, resolve } from "path";
 import { z } from "zod";
 import type { LlmAdapter, LlmMessage, LlmResponse, ToolDefinition } from "../src/llm/adapter.js";
 
@@ -18,13 +17,10 @@ type ToolEntry = {
 // ─── Config ─────────────────────────────────────────────────────
 const MAX_ITERATIONS = parseInt(process.env.MAX_ITERATIONS || "15");
 const MAX_TOKENS_SESSION = parseInt(process.env.MAX_TOKENS_SESSION || "200000");
-// En Vercel serverless con ESM, __dirname no existe.
-// Usamos import.meta.url + fileURLToPath para obtener el directorio del archivo actual.
-// Este archivo está en /var/task/api/chat.ts → dirname = /var/task/api
-// Subimos un nivel para obtener la raíz del proyecto: /var/task
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const PROJECT_DIR = resolve(join(__dirname, ".."));
+// Resolución robusta del directorio raíz del proyecto en Vercel serverless.
+// En Vercel, process.cwd() = /var/task y los archivos incluidos via includeFiles
+// están en /var/task/. Usamos process.cwd() como método principal.
+const PROJECT_DIR = process.cwd();
 
 // ─── Helpers de herramientas (inlined para serverless) ──────────
 function ok(data: unknown): ToolResult {
@@ -174,18 +170,7 @@ function buildTools(projectDir: string) {
     execute: async (args: any, ctx: Ctx) => {
       const caso = args.caso as string;
       const casoDir = join(fixturesDir, "casos", caso);
-      if (!existsSync(casoDir)) {
-        const debugInfo = {
-          projectDir,
-          fixturesDir,
-          casoDir,
-          fixturesDirExists: existsSync(fixturesDir),
-          casosExists: existsSync(join(fixturesDir, "casos")),
-        };
-        try { (debugInfo as any).casosContent = require("fs").readdirSync(join(fixturesDir, "casos")); } catch (e: any) { (debugInfo as any).casosError = e.message; }
-        try { (debugInfo as any).rootContent = require("fs").readdirSync(projectDir); } catch (e: any) { (debugInfo as any).rootError = e.message; }
-        return fail(`Caso "${caso}" no encontrado. Debug: ${JSON.stringify(debugInfo)}`);
-      }
+      if (!existsSync(casoDir)) return fail(`Caso "${caso}" no encontrado en fixtures/reto-01/casos/`);
 
       const solicitud = readJson(join(casoDir, "solicitud.json")) as any;
       let campos: string[] = [];
