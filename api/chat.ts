@@ -17,7 +17,12 @@ type ToolEntry = {
 // ─── Config ─────────────────────────────────────────────────────
 const MAX_ITERATIONS = parseInt(process.env.MAX_ITERATIONS || "15");
 const MAX_TOKENS_SESSION = parseInt(process.env.MAX_TOKENS_SESSION || "200000");
-const PROJECT_DIR = resolve(process.cwd());
+// En Vercel serverless, __dirname apunta al directorio de la función.
+// Los archivos incluidos via includeFiles están relativos a la raíz del proyecto.
+// process.cwd() = /var/task en Vercel, donde están los archivos incluidos.
+// __dirname = /var/task/api para este archivo.
+// Usamos join(__dirname, "..") para obtener la raíz del proyecto.
+const PROJECT_DIR = resolve(join(__dirname, ".."));
 
 // ─── Helpers de herramientas (inlined para serverless) ──────────
 function ok(data: unknown): ToolResult {
