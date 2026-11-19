@@ -6,7 +6,6 @@
   "outputDirectory": "public",
   "functions": {
     "api/**/*.ts": {
-      "runtime": "@vercel/node@3",
       "maxDuration": 60,
       "includeFiles": "agent/**,src/knowledge/**,fixtures/**"
     }
