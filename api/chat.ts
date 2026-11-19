@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync, appendFileSync } from "fs";
-import { join, resolve } from "path";
+import { join, resolve, dirname } from "path";
+import { fileURLToPath } from "url";
 import { z } from "zod";
 import type { LlmAdapter, LlmMessage, LlmResponse, ToolDefinition } from "../src/llm/adapter.js";
 
@@ -17,11 +18,12 @@ type ToolEntry = {
 // ─── Config ─────────────────────────────────────────────────────
 const MAX_ITERATIONS = parseInt(process.env.MAX_ITERATIONS || "15");
 const MAX_TOKENS_SESSION = parseInt(process.env.MAX_TOKENS_SESSION || "200000");
-// En Vercel serverless, __dirname apunta al directorio de la función.
-// Los archivos incluidos via includeFiles están relativos a la raíz del proyecto.
-// process.cwd() = /var/task en Vercel, donde están los archivos incluidos.
-// __dirname = /var/task/api para este archivo.
-// Usamos join(__dirname, "..") para obtener la raíz del proyecto.
+// En Vercel serverless con ESM, __dirname no existe.
+// Usamos import.meta.url + fileURLToPath para obtener el directorio del archivo actual.
+// Este archivo está en /var/task/api/chat.ts → dirname = /var/task/api
+// Subimos un nivel para obtener la raíz del proyecto: /var/task
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 const PROJECT_DIR = resolve(join(__dirname, ".."));
 
 // ─── Helpers de herramientas (inlined para serverless) ──────────
