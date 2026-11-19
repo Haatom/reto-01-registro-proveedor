@@ -174,7 +174,18 @@ function buildTools(projectDir: string) {
     execute: async (args: any, ctx: Ctx) => {
       const caso = args.caso as string;
       const casoDir = join(fixturesDir, "casos", caso);
-      if (!existsSync(casoDir)) return fail(`Caso "${caso}" no encontrado en fixtures/reto-01/casos/`);
+      if (!existsSync(casoDir)) {
+        const debugInfo = {
+          projectDir,
+          fixturesDir,
+          casoDir,
+          fixturesDirExists: existsSync(fixturesDir),
+          casosExists: existsSync(join(fixturesDir, "casos")),
+        };
+        try { (debugInfo as any).casosContent = require("fs").readdirSync(join(fixturesDir, "casos")); } catch (e: any) { (debugInfo as any).casosError = e.message; }
+        try { (debugInfo as any).rootContent = require("fs").readdirSync(projectDir); } catch (e: any) { (debugInfo as any).rootError = e.message; }
+        return fail(`Caso "${caso}" no encontrado. Debug: ${JSON.stringify(debugInfo)}`);
+      }
 
       const solicitud = readJson(join(casoDir, "solicitud.json")) as any;
       let campos: string[] = [];
