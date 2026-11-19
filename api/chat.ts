@@ -42,50 +42,109 @@ function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
   return current;
 }
 
-// ─── OpenAI Adapter (inlined) ────────────────────────────────────
-class OpenAIAdapter implements LlmAdapter {
-  provider = "openai";
+// ─── Anthropic (Claude) Adapter (inlined) ────────────────────────
+class AnthropicAdapter implements LlmAdapter {
+  provider = "anthropic";
   model: string;
   private apiKey: string;
-  private baseUrl: string;
   private timeoutMs: number;
 
   constructor() {
-    this.apiKey = process.env.OPENAI_API_KEY || "";
-    this.model = process.env.LLM_MODEL || "gpt-4o-mini";
-    this.baseUrl = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
-    this.timeoutMs = 55_000; // Vercel tiene 60s max
+    this.apiKey = process.env.ANTHROPIC_API_KEY || "";
+    this.model = process.env.LLM_MODEL || "claude-sonnet-4-20250514";
+    this.timeoutMs = 55_000;
 
-    if (!this.apiKey) throw new Error("OPENAI_API_KEY no configurada");
+    if (!this.apiKey) throw new Error("ANTHROPIC_API_KEY no configurada");
   }
 
   async enviar(mensajes: LlmMessage[], herramientas: ToolDefinition[]): Promise<LlmResponse> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
+      // Separar system prompt de los mensajes
+      let systemPrompt = "";
+      const apiMessages: Array<Record<string, unknown>> = [];
+
+      for (const m of mensajes) {
+        if (m.role === "system") {
+          systemPrompt += (systemPrompt ? "\n\n" : "") + m.content;
+          continue;
+        }
+        if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
+          const content: Array<Record<string, unknown>> = [];
+          if (m.content) content.push({ type: "text", text: m.content });
+          for (const tc of m.tool_calls) {
+            content.push({
+              type: "tool_use",
+              id: tc.id,
+              name: tc.function.name,
+              input: JSON.parse(tc.function.arguments),
+            });
+          }
+          apiMessages.push({ role: "assistant", content });
+          continue;
+        }
+        if (m.role === "tool") {
+          apiMessages.push({
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: m.tool_call_id, content: m.content }],
+          });
+          continue;
+        }
+        apiMessages.push({ role: m.role, content: m.content || "" });
+      }
+
+      // Convertir herramientas al formato Anthropic
+      const anthropicTools = herramientas.map((h) => ({
+        name: h.function.name,
+        description: h.function.description,
+        input_schema: h.function.parameters,
+      }));
+
       const body: Record<string, unknown> = {
         model: this.model,
-        messages: mensajes.map((m) => {
-          if (m.role === "tool") return { role: "tool", content: m.content, tool_call_id: m.tool_call_id };
-          if (m.tool_calls && m.tool_calls.length > 0) return { role: m.role, content: m.content, tool_calls: m.tool_calls };
-          return { role: m.role, content: m.content };
-        }),
-        temperature: 0.2,
         max_tokens: 4096,
+        messages: apiMessages,
       };
-      if (herramientas.length > 0) { body.tools = herramientas; body.tool_choice = "auto"; }
+      if (systemPrompt) body.system = systemPrompt;
+      if (anthropicTools.length > 0) body.tools = anthropicTools;
 
-      const res = await fetch(`${this.baseUrl}/chat/completions`, {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": this.apiKey,
+          "anthropic-version": "2023-06-01",
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      if (!res.ok) { const text = await res.text(); throw new Error(`OpenAI API error ${res.status}: ${text}`); }
+      if (!res.ok) { const text = await res.text(); throw new Error(`Anthropic API error ${res.status}: ${text}`); }
 
       const json = (await res.json()) as any;
-      const choice = json.choices[0];
-      return { content: choice.message.content, tool_calls: choice.message.tool_calls ?? [], usage: json.usage };
+
+      // Convertir respuesta Anthropic al formato unificado
+      let textContent = "";
+      const toolCalls: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> = [];
+
+      for (const block of json.content || []) {
+        if (block.type === "text") textContent += block.text;
+        if (block.type === "tool_use") {
+          toolCalls.push({
+            id: block.id,
+            type: "function",
+            function: { name: block.name, arguments: JSON.stringify(block.input) },
+          });
+        }
+      }
+
+      const usage = json.usage ? {
+        prompt_tokens: json.usage.input_tokens,
+        completion_tokens: json.usage.output_tokens,
+        total_tokens: json.usage.input_tokens + json.usage.output_tokens,
+      } : undefined;
+
+      return { content: textContent || null, tool_calls: toolCalls, usage };
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") throw new Error("Timeout LLM (55s)");
       throw e;
@@ -395,7 +454,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
   try {
-    const llm = new OpenAIAdapter();
+    const llm = new AnthropicAdapter();
     const tools = buildTools(PROJECT_DIR);
 
     const { sessionId: reqSessionId, message } = req.body as { sessionId?: string; message: string };
